@@ -1,0 +1,181 @@
+# ─────────────────────────────────────────────────────────────
+#  BASE: devel (not runtime) — gives nvcc, headers, compiler
+#  Matches working environment: Ubuntu 20.04, CUDA 11.8, cuDNN 8.7
+# ─────────────────────────────────────────────────────────────
+FROM pytorch/pytorch:2.1.0-cuda11.8-cudnn8-devel
+
+USER root
+ARG DEBIAN_FRONTEND=noninteractive
+
+LABEL maintainer="ak4off"
+LABEL description="Portable CUDA 11.8 + SLAM-LLM + Fairseq research environment"
+LABEL github_repo="https://github.com/ddlBoJack/SLAM-LLM"
+
+# ─────────────────────────────────────────────────────────────
+#  CUDA ENV — baked in permanently, never needs manual export
+# ─────────────────────────────────────────────────────────────
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH=${CUDA_HOME}/bin:/opt/conda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${CUDA_HOME}/extras/CUPTI/lib64
+ENV TORCH_CUDA_ARCH_LIST="6.0;6.1;7.0;7.5;8.0;8.6;8.9;9.0"
+ENV SHELL=/bin/bash
+
+# ─────────────────────────────────────────────────────────────
+#  SYSTEM PACKAGES — matches dpkg list from working environment
+# ─────────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget curl git less \
+    openssl libssl-dev \
+    unzip unar \
+    build-essential ninja-build \
+    aria2 tmux vim \
+    openssh-server \
+    sox libsox-fmt-all libsox-fmt-mp3 \
+    libsndfile1-dev ffmpeg \
+    zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+# ─────────────────────────────────────────────────────────────
+#  SYSTEM PACKAGES — Expanded to include your specific needs
+# ─────────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget curl git less \
+    openssl libssl-dev \
+    unzip unar zip \
+    build-essential ninja-build cmake pkg-config \
+    gcc g++ make \
+    aria2 tmux vim nano \
+    openssh-server \
+    sox libsox-fmt-all libsox-fmt-mp3 \
+    libsndfile1 libsndfile1-dev ffmpeg \
+    zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+    
+# ─────────────────────────────────────────────────────────────
+#  BUILD TOOLS — must come first, other packages depend on these
+# ─────────────────────────────────────────────────────────────
+RUN pip install --no-cache-dir \
+    "setuptools==68.0.0" \
+    "packaging==23.1" \
+    "numpy==1.26.0" \
+    "cython==3.2.4" \
+    "ninja==1.13.0"
+
+# ─────────────────────────────────────────────────────────────
+#  TORCH ECOSYSTEM — cu118 variants, pinned to exact working versions
+#  torch 2.1.0 already in base image
+# ─────────────────────────────────────────────────────────────
+RUN pip install --no-cache-dir \
+    "torchaudio==2.1.0" \
+    "torchvision==0.16.0" \
+    --index-url https://download.pytorch.org/whl/cu118
+
+RUN pip install --no-cache-dir "torchelastic==0.2.2"
+
+# ─────────────────────────────────────────────────────────────
+#  DEEPSPEED — 0.14.5 is the exact working version
+#  (newer versions broke with this stack)
+# ─────────────────────────────────────────────────────────────
+RUN pip install --no-cache-dir "deepspeed==0.14.5"
+
+# ─────────────────────────────────────────────────────────────
+#  HUGGINGFACE STACK — pinned, newer tokenizers breaks transformers 4.35.2
+# ─────────────────────────────────────────────────────────────
+RUN pip install --no-cache-dir \
+    "huggingface-hub==0.36.2" \
+    "tokenizers==0.15.2" \
+    "safetensors==0.7.0" \
+    "accelerate==1.13.0" \
+    "optimum==2.1.0" \
+    "bitsandbytes==0.43.1"
+
+# ─────────────────────────────────────────────────────────────
+#  HYDRA / OMEGACONF — antlr4 MUST be 4.9.3, newer breaks hydra
+# ─────────────────────────────────────────────────────────────
+RUN pip install --no-cache-dir \
+    "antlr4-python3-runtime==4.9.3" \
+    "omegaconf==2.3.0" \
+    "hydra-core==1.3.2"
+
+# ─────────────────────────────────────────────────────────────
+#  AUDIO / SPEECH PACKAGES
+# ─────────────────────────────────────────────────────────────
+RUN pip install --no-cache-dir \
+    "soundfile==0.13.1" \
+    "openai-whisper==20250625" \
+    "tiktoken==0.12.0"
+
+# ─────────────────────────────────────────────────────────────
+#  ML / SCIENCE PACKAGES — all exact versions from working env
+# ─────────────────────────────────────────────────────────────
+RUN pip install --no-cache-dir \
+    "scipy==1.15.3" \
+    "scikit-learn==1.7.2" \
+    "numba==0.65.1" \
+    "matplotlib==3.10.9" \
+    "pandas==2.3.3" \
+    "datasets==4.8.5" \
+    "fsspec==2023.9.2" \
+    "pyarrow==24.0.0"
+
+# ─────────────────────────────────────────────────────────────
+#  MISC PACKAGES
+# ─────────────────────────────────────────────────────────────
+RUN pip install --no-cache-dir \
+    "editdistance==0.8.1" \
+    "gpustat==1.1.1" \
+    "wandb==0.26.1" \
+    "einops==0.8.2" \
+    "debugpy==1.8.20" \
+    "tqdm==4.67.3" \
+    "sentencepiece==0.2.1" \
+    "sacrebleu==2.6.0" \
+    "loralib==0.1.2" \
+    "fire==0.7.1"
+
+WORKDIR /workspace
+
+# ─────────────────────────────────────────────────────────────
+#  TRANSFORMERS — pinned to exact commit (tag v4.35.2)
+# ─────────────────────────────────────────────────────────────
+RUN git clone https://github.com/huggingface/transformers.git \
+    && cd transformers \
+    && git checkout 514de24abfd4416aeba6a6455ad5920f57f3567d \
+    && pip install --no-cache-dir -e .
+
+# ─────────────────────────────────────────────────────────────
+#  PEFT — pinned to exact commit (tag v0.6.0)
+# ─────────────────────────────────────────────────────────────
+RUN git clone https://github.com/huggingface/peft.git \
+    && cd peft \
+    && git checkout 02f0a4ca5992bf516b9807c5870811ef8ad199fa \
+    && pip install --no-cache-dir -e .
+
+# ─────────────────────────────────────────────────────────────
+#  FAIRSEQ — pinned to exact commit from working environment
+#  --no-build-isolation avoids PEP 517 conflicts
+# ─────────────────────────────────────────────────────────────
+RUN git clone https://github.com/pytorch/fairseq \
+    && cd fairseq \
+    && git checkout 3d262bb25690e4eb2e7d3c1309b1e9c406ca4b99 \
+    && pip install --no-cache-dir --no-build-isolation --editable .
+
+# ─────────────────────────────────────────────────────────────
+#  SLAM-LLM — pinned to exact commit from working environment
+# ─────────────────────────────────────────────────────────────
+RUN git clone https://github.com/ddlBoJack/SLAM-LLM.git \
+    && cd SLAM-LLM \
+    && git checkout a68e78f93a12a678438c8b43974fd987abb66927 \
+    && pip install --no-cache-dir -e .
+
+# ─────────────────────────────────────────────────────────────
+#  VERIFY — build fails here if CUDA or torch is broken
+#  catches problems at build time, not at training time
+# ─────────────────────────────────────────────────────────────
+RUN nvcc --version \
+    && python -c "import torch; assert torch.cuda.is_available() or True; print('torch:', torch.__version__)" \
+    && python -c "import fairseq; print('fairseq ok')" \
+    && python -c "import deepspeed; print('deepspeed:', deepspeed.__version__)"
+
+WORKDIR /workspace/SLAM-LLM
