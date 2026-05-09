@@ -1,0 +1,10 @@
+.git
+wandb
+checkpoints
+outputs
+logs
+*.pt
+*.pth
+*.ckpt
+data
+__pycache__
