@@ -16,3 +16,10 @@ recognition disparities. Furthermore, we aim to explore fairness-aware data augm
 domain adaptation strategies to mitigate these biases. The outcome of this project is to develop
 a comprehensive framework toward inclusive and equitable ASR technologies, ensuring robust
 speech recognition performance across all socioeconomic groups.
+
+
+## Methodology
+
+
+## Results
+
