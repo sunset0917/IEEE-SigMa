@@ -20,6 +20,19 @@ speech recognition performance across all socioeconomic groups.
 
 ## Methodology
 
+## Repository Structure
+
+## Datasets
+
+We are using many datasets to do the test part, which includes:
+- Common Voice 22 Dataset (Primarily for training)
+- Fairspeech Dataset
+- Vox Populi (english accented group)
+- Faist
+- EdAcc
 
 ## Results
 
+## Contributions
+
+## Acknowledgement
