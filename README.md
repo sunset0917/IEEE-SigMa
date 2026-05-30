@@ -35,4 +35,5 @@ We are using many datasets to do the test part, which includes:
 
 ## Contributions
 
+- train_utils.py: Added early stopping logic
 ## Acknowledgement
