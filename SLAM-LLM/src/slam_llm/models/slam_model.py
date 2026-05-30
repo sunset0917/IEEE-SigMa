@@ -18,12 +18,8 @@ from slam_llm.utils.metric import compute_accuracy
 import logging
 logger = logging.getLogger(__name__)
 
+#Added method for cripr bias neurons detection
 def forward_for_crispr(self, **kwargs):
-    """
-    Forward pass con gradientes habilitados para CRISPR.
-    Retorna los logits del LLM sin hacer generate().
-    """
-    # Mismo pipeline que forward() pero sin @no_grad y retornando logits
     audio_mel = kwargs.get("audio_mel", None)
     audio_mel_mask = kwargs.get("audio_mel_mask", None)
     audio_mel_post_mask = kwargs.get("audio_mel_post_mask", None)
@@ -33,17 +29,12 @@ def forward_for_crispr(self, **kwargs):
     input_ids = kwargs.get("input_ids", None)
     attention_mask = kwargs.get("attention_mask", None)
 
-    # --- Encoder (sin gradientes, está frozen) ---
     with torch.no_grad():
         if self.model_config.encoder_name == "whisper":
             encoder_outs = self.encoder.extract_variable_length_features(
                 audio_mel.permute(0, 2, 1)
             )
-
-    # --- Proyector (CON gradientes) ---
     encoder_outs = self.encoder_projector(encoder_outs)
-
-    # --- Embed tokens del LLM ---
     input_ids[input_ids == -1] = 0
     with torch.no_grad():
         if hasattr(self.llm.model, "embed_tokens"):
@@ -52,8 +43,6 @@ def forward_for_crispr(self, **kwargs):
             inputs_embeds = self.llm.model.model.embed_tokens(input_ids)
         else:
             inputs_embeds = self.llm.model.model.model.embed_tokens(input_ids)
-
-    # --- Insertar encoder_outs en posiciones de modality_mask ---
     if modality_mask is not None:
         modality_mask_start_indices = (modality_mask == True).float().argmax(dim=1)
         modality_lengths = torch.clamp(
@@ -67,7 +56,6 @@ def forward_for_crispr(self, **kwargs):
             ] = encoder_outs[i][:modality_lengths[i]]
         inputs_embeds = encoder_outs_pad + inputs_embeds * (~modality_mask[:, :, None])
 
-    # --- Forward del LLM (con gradientes para poder hacer backward) ---
     model_outputs = self.llm(
         inputs_embeds=inputs_embeds,
         attention_mask=attention_mask,
