@@ -68,7 +68,7 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
     # elif train_config.use_fp16 and not train_config.enable_fsdp:
     #     scaler = torch.cuda.amp.GradScaler()
     if train_config.use_fp16:
-        scaler = torch.cuda.amp.GradScaler()
+        scaler = torch.amp.GradScaler(device='cuda', enabled=True)
         if train_config.enable_fsdp:
             scaler = ShardedGradScaler()
     if train_config.enable_fsdp or train_config.enable_ddp:
@@ -86,9 +86,15 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
     results = {}
     best_val_loss = float("inf")
     best_val_acc = 0.0
+
+
+    patience = 3  # Número de evaluaciones sin mejora antes de parar
+    no_improvement_count = 0
+    best_eval_loss = float("inf")
+
     for epoch in range(train_config.num_epochs):
         epoch_start_time = time.perf_counter()
-        with MemoryTrace() as memtrace,Join([model]):  # track the memory usage
+        with MemoryTrace() as memtrace:  # track the memory usage
             model.train()
             total_loss = 0.0
             total_acc = 0.0
@@ -151,6 +157,9 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
                     # regular backpropagation when fp16 is not used
                     loss.backward()
                     if (step + 1) % gradient_accumulation_steps == 0 or (  train_config.batching_strategy != "dynamic" and step == len(train_dataloader) - 1):
+                        
+                        #Agregué estoooooooooo
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                         optimizer.step()
                         if lr_scheduler is not None:
                             lr_scheduler.step()
@@ -275,15 +284,33 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
                             dist.barrier()
                     checkpoint_end_time = time.perf_counter() - checkpoint_start_time
                     checkpoint_times.append(checkpoint_end_time)
+
                     if eval_epoch_loss < best_val_loss:
                         best_val_loss = eval_epoch_loss
+                        no_improvement_count = 0 
                         if train_config.enable_fsdp or train_config.enable_ddp:
                             if rank==0:
                                 logger.info(f"best eval loss on epoch {epoch+1} is {best_val_loss}")
                         else:
                             logger.info(f"best eval loss on epoch {epoch+1} is {best_val_loss}")
+                    else:
+                        no_improvement_count += 1 
+                        if (train_config.enable_fsdp or train_config.enable_ddp):
+                            if rank == 0:
+                                logger.info(f"No improvement for {no_improvement_count} checks. Max patience is 5")
+                        else:
+                            logger.info(f"No improvement for {no_improvement_count} checks. Max patience is 5")
+
+                
+                    if no_improvement_count >= 20:
+                        if rank == 0:
+                            logger.info("Early stopping triggered. Training stopped.")
+                        return {}
+                  
+
                     val_loss.append(eval_epoch_loss)
                     val_prep.append(eval_ppl)
+
                     if rest:
                         if eval_epoch_acc > best_val_acc:
                             best_val_acc = eval_epoch_acc
@@ -318,6 +345,8 @@ def train(model, train_dataloader,eval_dataloader, tokenizer, optimizer, lr_sche
                         with autocast():
                             logger.info(model.inference(train_config.run_test_during_validation_file, train_config.run_test_during_validation_prompt))
                         logger.info("=====================================")
+
+
             pbar.close()
 
         epoch_end_time = time.perf_counter()-epoch_start_time
