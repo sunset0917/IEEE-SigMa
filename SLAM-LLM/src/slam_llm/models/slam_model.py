@@ -18,6 +18,62 @@ from slam_llm.utils.metric import compute_accuracy
 import logging
 logger = logging.getLogger(__name__)
 
+def forward_for_crispr(self, **kwargs):
+    """
+    Forward pass con gradientes habilitados para CRISPR.
+    Retorna los logits del LLM sin hacer generate().
+    """
+    # Mismo pipeline que forward() pero sin @no_grad y retornando logits
+    audio_mel = kwargs.get("audio_mel", None)
+    audio_mel_mask = kwargs.get("audio_mel_mask", None)
+    audio_mel_post_mask = kwargs.get("audio_mel_post_mask", None)
+    audio = kwargs.get("audio", None)
+    audio_mask = kwargs.get("audio_mask", None)
+    modality_mask = kwargs.get("modality_mask", None)
+    input_ids = kwargs.get("input_ids", None)
+    attention_mask = kwargs.get("attention_mask", None)
+
+    # --- Encoder (sin gradientes, está frozen) ---
+    with torch.no_grad():
+        if self.model_config.encoder_name == "whisper":
+            encoder_outs = self.encoder.extract_variable_length_features(
+                audio_mel.permute(0, 2, 1)
+            )
+
+    # --- Proyector (CON gradientes) ---
+    encoder_outs = self.encoder_projector(encoder_outs)
+
+    # --- Embed tokens del LLM ---
+    input_ids[input_ids == -1] = 0
+    with torch.no_grad():
+        if hasattr(self.llm.model, "embed_tokens"):
+            inputs_embeds = self.llm.model.embed_tokens(input_ids)
+        elif hasattr(self.llm.model.model, "embed_tokens"):
+            inputs_embeds = self.llm.model.model.embed_tokens(input_ids)
+        else:
+            inputs_embeds = self.llm.model.model.model.embed_tokens(input_ids)
+
+    # --- Insertar encoder_outs en posiciones de modality_mask ---
+    if modality_mask is not None:
+        modality_mask_start_indices = (modality_mask == True).float().argmax(dim=1)
+        modality_lengths = torch.clamp(
+            modality_mask.sum(dim=1), max=encoder_outs.shape[1]
+        ).tolist()
+        encoder_outs_pad = torch.zeros_like(inputs_embeds)
+        for i in range(encoder_outs.shape[0]):
+            encoder_outs_pad[
+                i,
+                modality_mask_start_indices[i]:modality_mask_start_indices[i] + modality_lengths[i]
+            ] = encoder_outs[i][:modality_lengths[i]]
+        inputs_embeds = encoder_outs_pad + inputs_embeds * (~modality_mask[:, :, None])
+
+    # --- Forward del LLM (con gradientes para poder hacer backward) ---
+    model_outputs = self.llm(
+        inputs_embeds=inputs_embeds,
+        attention_mask=attention_mask,
+    )
+    return model_outputs.logits  # [batch, seq_len, vocab_size]
+
 def model_factory(train_config, model_config, **kwargs):
     # return necessary components for training
     tokenizer = setup_tokenizer(train_config, model_config, **kwargs)
@@ -117,7 +173,7 @@ def setup_encoder(train_config, model_config, **kwargs):
 
 def setup_llm(train_config, model_config, **kwargs):
     from pkg_resources import packaging
-    use_cache = False if train_config.enable_fsdp or train_config.enable_ddp else None
+    use_cache = False #if train_config.enable_fsdp or train_config.enable_ddp else None
     if (train_config.enable_fsdp or train_config.enable_ddp) and train_config.low_cpu_fsdp:
         """
         for FSDP, we can save cpu memory by loading pretrained model on rank0 only.
@@ -125,11 +181,7 @@ def setup_llm(train_config, model_config, **kwargs):
         model alone would consume 2+TB cpu mem (70 * 4 * 8). This will add some comms
         overhead and currently requires latest nightly.
         """
-        # v = packaging.version.parse(torch.__version__)
-        # verify_latest_nightly = v.is_devrelease and v.dev >= 20230701
-        # if not verify_latest_nightly:
-        #     raise Exception("latest pytorch nightly build is required to run with low_cpu_fsdp config, "
-        #                     "please install latest nightly.")
+
         rank = int(os.environ["RANK"])
         if rank == 0:
             if "vallex" in model_config.llm_name.lower():
@@ -149,8 +201,6 @@ def setup_llm(train_config, model_config, **kwargs):
             else:
                 model = AutoModelForCausalLM.from_pretrained(
                     model_config.llm_path,
-                    load_in_8bit=True if train_config.quantization else None,
-                    device_map="auto" if train_config.quantization else None,
                     use_cache=use_cache,
                 )
         else:
@@ -180,8 +230,6 @@ def setup_llm(train_config, model_config, **kwargs):
         else:
             model = AutoModelForCausalLM.from_pretrained(
                 model_config.llm_path,
-                load_in_8bit=True if train_config.quantization else None,
-                device_map="auto" if train_config.quantization else None,
                 use_cache=use_cache,
             )
     if (train_config.enable_fsdp or train_config.enable_ddp) and train_config.use_fast_kernels:
@@ -318,7 +366,23 @@ class slam_model(nn.Module):
                 self.encoder.eval()
 
             if self.model_config.encoder_name == "whisper":
-                encoder_outs = self.encoder.extract_variable_length_features(audio_mel.permute(0, 2, 1)) # bs*seq*dim
+
+
+                audio_input = audio_mel.permute(0, 2, 1)  # bs * n_mels * seq
+                audio_input = audio_input.to(self.encoder.conv1.weight.dtype)
+
+                if hasattr(self.encoder, "extract_variable_length_features"):
+                    encoder_outs = self.encoder.extract_variable_length_features(audio_input)
+                else:
+                    encoder_outs = self.encoder(audio_input)
+
+                if hasattr(encoder_outs, "last_hidden_state"):
+                    encoder_outs = encoder_outs.last_hidden_state
+                print("encoder_outs.shape:", encoder_outs.shape)
+                encoder_outs = encoder_outs.to(self.encoder_projector.linear1.weight.dtype)
+                encoder_outs = self.encoder_projector(encoder_outs)
+
+
             if self.model_config.encoder_name == "beats":
                 encoder_outs, audio_mel_post_mask = self.encoder.extract_features(audio_mel, audio_mel_mask) # bs*seq*dim
             if self.model_config.encoder_name == "eat":
@@ -353,19 +417,31 @@ class slam_model(nn.Module):
 
             if self.model_config.encoder_projector == "q-former":
                 encoder_outs = self.encoder_projector(encoder_outs, audio_mel_post_mask)
+
+
             if self.model_config.encoder_projector == "linear":
-                encoder_outs = self.encoder_projector(encoder_outs)
+                if encoder_outs is not None:
+                    if encoder_outs.shape[-1] != self.model_config.llm_dim:
+                        encoder_outs = self.encoder_projector(encoder_outs)
+
+
+
+
             if self.model_config.encoder_projector == "cov1d-linear": 
-                encoder_outs = self.encoder_projector(encoder_outs) 
 
-        if instruct_ids is not None:
-            if self.encoder is not None:
-                encoder_outs = self.encoder(input_ids=instruct_ids, attention_mask=instruct_mask).last_hidden_state
+                if encoder_outs is not None:
+                    # Solo aplicamos el proyector si la dimensión actual NO es todavía la del LLM (2048)
+                    if encoder_outs.shape[-1] != self.model_config.llm_dim:
 
-            if self.model_config.encoder_projector == "q-former":
-                encoder_outs = self.encoder_projector(encoder_outs, instruct_mask)
-            if self.model_config.encoder_projector == "linear":
-                encoder_outs = self.encoder_projector(encoder_outs)
+                        encoder_outs = self.encoder_projector(encoder_outs)
+        #if instruct_ids is not None:
+            #if self.encoder is not None:
+                #encoder_outs = self.encoder(input_ids=instruct_ids, attention_mask=instruct_mask).last_hidden_state
+
+            #if self.model_config.encoder_projector == "q-former":
+                #encoder_outs = self.encoder_projector(encoder_outs, instruct_mask)
+            #if self.model_config.encoder_projector == "linear":
+                #encoder_outs = self.encoder_projector(encoder_outs)
 
         if input_ids is not None:
             input_ids[input_ids == -1] = 0
@@ -439,12 +515,12 @@ class slam_model(nn.Module):
         model_outputs = self.llm.generate(
             inputs_embeds=inputs_embeds,
             # max_length=kwargs.get("max_length", 200),
-            max_new_tokens=kwargs.get("max_new_tokens", 200),
+            max_new_tokens=kwargs.get("max_new_tokens", 150),
             num_beams=kwargs.get("num_beams", 4),
             do_sample=kwargs.get("do_sample", False),
             min_length=kwargs.get("min_length", 1),
             top_p=kwargs.get("top_p", 1.0),
-            repetition_penalty=kwargs.get("repetition_penalty", 1.0),
+            repetition_penalty=kwargs.get("repetition_penalty", 1.25),
             length_penalty=kwargs.get("length_penalty", 1.0),
             temperature=kwargs.get("temperature", 1.0),
             attention_mask=attention_mask,
