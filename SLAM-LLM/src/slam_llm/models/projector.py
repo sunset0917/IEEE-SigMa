@@ -1,30 +1,41 @@
 import torch
 import torch.nn as nn
-
+from torch.nn.utils import spectral_norm
 
 class EncoderProjectorConcat(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.k = config.encoder_projector_ds_rate
-        self.encoder_dim = config.encoder_dim
-        self.llm_dim = config.llm_dim
-        self.linear1 = nn.Linear(self.encoder_dim * self.k, 2048)
+        self.k = config.encoder_projector_ds_rate 
+        self.encoder_dim = config.encoder_dim      
+        self.llm_dim = config.llm_dim              
+        input_dim = self.encoder_dim * self.k 
+        
+        self.linear1 = nn.Linear(input_dim, 2048)
         self.relu = nn.ReLU()
-        self.linear2 = nn.Linear(2048, config.llm_dim)
+        self.linear2 = nn.Linear(2048, self.llm_dim)
+        self.hidden_activations = None 
+      
 
     def forward(self, x):
         batch_size, seq_len, dim = x.size()
+        
         num_frames_to_discard = seq_len % self.k
         if num_frames_to_discard > 0:
             x = x[:, :-num_frames_to_discard, :]
-        seq_len = x.size(1)
         
-        x = x.contiguous()
-        x = x.view(batch_size, seq_len // self.k, dim * self.k)
+        x = x.reshape(batch_size, -1, dim * self.k)
+
         x = self.linear1(x)
         x = self.relu(x)
+
+        self.hidden_activations = x
+        if x.requires_grad:
+           self.hidden_activations.retain_grad()
+        #self.hidden_activations.retain_grad()
         x = self.linear2(x)
+
         return x
+
 
 class EncoderProjectorCov1d(nn.Module):
     def __init__(self, config):
