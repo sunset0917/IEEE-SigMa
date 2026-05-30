@@ -19,9 +19,15 @@ class ConcatDataset(Dataset):
             "attention_mask": [],
             "labels": [],
             }
-
-        for sample in tqdm(self.dataset, desc="Preprocessing dataset", dynamic_ncols=True):
-            buffer = {k: v + sample[k] for k,v in buffer.items()}
+        for sample in tqdm(dataset, desc="Preprocessing dataset"):
+            if len(buffer) == 0:
+                buffer = {k: v for k, v in sample.items()}
+            else:
+                for k, v in buffer.items():
+                    val = sample[k]
+                    if hasattr(val, "tolist"):
+                        val = val.tolist()
+                    buffer[k] = v + val
 
             while len(next(iter(buffer.values()))) > self.chunk_size:
                 self.samples.append({k: v[:self.chunk_size] for k,v in buffer.items()})
@@ -32,3 +38,4 @@ class ConcatDataset(Dataset):
 
     def __len__(self):
         return len(self.samples)
+
