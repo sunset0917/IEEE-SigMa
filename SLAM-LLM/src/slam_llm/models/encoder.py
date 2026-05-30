@@ -18,9 +18,6 @@ class WhisperWrappedEncoder:
             x = F.gelu(self.conv1(x))
             x = F.gelu(self.conv2(x))
             x = x.permute(0, 2, 1)
-
-            # assert x.shape[1:] == self.positional_embedding.shape, "incorrect audio shape"
-            # x = (x + self.positional_embedding).to(x.dtype)
             x = (x + self.positional_embedding[: x.shape[1]]).to(x.dtype)
 
             for block in self.blocks:
@@ -32,7 +29,12 @@ class WhisperWrappedEncoder:
         if model_config.whisper_decode:
             import whisper
             whisper_model = whisper.load_model(name=model_config.encoder_path, device='cpu')
-            whisper_model.encoder.extract_variable_length_features = types.MethodType(extract_variable_length_features, whisper_model.encoder)
+            audio_input = audio_mel.permute(0, 2, 1)  # bs * n_mels * seq
+            if hasattr(self.encoder, "extract_variable_length_features"):
+                encoder_outs = self.encoder.extract_variable_length_features(audio_input)
+            else:
+                encoder_outs = self.encoder(audio_input)
+
             return whisper_model
 
         if model_config.encoder_path_hf is not None:
